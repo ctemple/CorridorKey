@@ -150,13 +150,22 @@ async def upload_video(file: UploadFile = File(...)) -> dict:
         workspace_dir=str(job_dir),
     )
 
+    # Probe input video to get bitrate for the UI default
+    try:
+        from backend.ffmpeg_tools import probe_video
+        info = probe_video(str(upload_path))
+        job.input_bitrate = info.get("bit_rate", 0)
+    except Exception:
+        logger.warning("Could not probe input video bitrate for job %s", job_id)
+        job.input_bitrate = 0
+
     async with _jobs_lock:
         _jobs[job_id] = job
 
     # Initialize SSE queue
     job._sse_queue = asyncio.Queue(maxsize=200)
 
-    await _persist_job(job)
+    _persist_job(job)
     logger.info("Upload complete: %s → job %s (%d bytes)", file.filename, job_id, total)
 
     return job.to_dict()
@@ -178,6 +187,7 @@ async def start_job(
     refiner_scale: Annotated[float, Form()] = 1.0,
     generate_comp: Annotated[bool, Form()] = True,
     gpu_post_processing: Annotated[bool, Form()] = False,
+    output_bitrate: Annotated[int, Form()] = 0,  # 0 = same as input
 ) -> dict:
     """Configure parameters and enqueue the job for processing."""
     async with _jobs_lock:
@@ -211,8 +221,9 @@ async def start_job(
         # Reset error state if retrying
         job.error = None
         job.state = JobState.UPLOADED
+        job.output_bitrate = output_bitrate
 
-    await _persist_job(job)
+    _persist_job(job)
 
     # Submit to worker (synchronous — thread-safe queue)
     if _worker is None:
@@ -329,13 +340,43 @@ async def download_job(job_id: str) -> FileResponse:
 # Persistence helpers
 # ---------------------------------------------------------------------------
 
-async def _persist_job(job: Job) -> None:
-    """Save job metadata to disk so state survives restarts."""
+def _persist_job(job: Job) -> None:
+    """Save job metadata to disk so state survives restarts (thread-safe)."""
     job_file = UPLOADS_DIR / job.job_id / "job.json"
     try:
         job_file.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
     except Exception:
         logger.warning("Failed to persist job %s", job.job_id)
+
+
+def _scan_for_output(job_dir: str) -> str | None:
+    """Walk a job directory and return the path to the best output file.
+
+    Prefers *_output.webm over other webm/mp4 files, and skips input.*
+    files at the workspace root.
+    Returns None if no output file is found.
+    """
+    candidates: list[tuple[int, str]] = []  # (score, path)
+    for root, _dirs, files in os.walk(job_dir):
+        for f in files:
+            if not f.endswith((".webm", ".mp4")):
+                continue
+            full = os.path.join(root, f)
+            # Skip input files (bare input.* at workspace root or clip root level)
+            if os.path.basename(f).startswith("input."):
+                continue
+            if f.endswith("_output.webm"):
+                return full  # best match — return immediately
+            if f.endswith("_comp.mp4"):
+                candidates.append((2, full))
+            elif f.endswith(".webm"):
+                candidates.append((1, full))
+            elif f.endswith(".mp4"):
+                candidates.append((0, full))
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+    return None
 
 
 async def _recover_jobs() -> None:
@@ -364,6 +405,8 @@ async def _recover_jobs() -> None:
             uploaded_path=data.get("uploaded_path", ""),
             workspace_dir=str(job_dir),
             output_path=data.get("output_filename"),
+            input_bitrate=data.get("input_bitrate", 0),
+            output_bitrate=data.get("output_bitrate", 0),
             error=data.get("error"),
         )
 
@@ -373,6 +416,16 @@ async def _recover_jobs() -> None:
             job.error = "Server was restarted while processing"
         elif job.state == JobState.QUEUED:
             job.state = JobState.UPLOADED  # Re-queue won't happen automatically
+
+        # Auto-detect output files regardless of persisted state.
+        # Old code never persisted job completion, so many jobs with valid
+        # output files on disk still show "uploaded" / missing output_path.
+        _detected = _scan_for_output(str(job_dir))
+        if _detected:
+            job.output_path = _detected
+            job.state = JobState.COMPLETED
+            job.error = None
+            logger.info("Detected output for job %s: %s", job_id, _detected)
 
         job._sse_queue = asyncio.Queue(maxsize=200)
         async with _jobs_lock:

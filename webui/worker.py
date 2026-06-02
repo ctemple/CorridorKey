@@ -89,6 +89,18 @@ class JobWorker:
         except Exception:
             pass  # SSE queue might be full or closed — ignore
 
+    @staticmethod
+    def _persist_job_sync(job: Job) -> None:
+        """Persist job state to disk (called from worker thread)."""
+        import json as _json
+        import pathlib as _pl
+
+        job_file = _pl.Path(job.workspace_dir) / "job.json"
+        try:
+            job_file.write_text(_json.dumps(job.to_dict(), indent=2), encoding="utf-8")
+        except Exception:
+            logger.warning("Failed to persist job %s", job.job_id, exc_info=True)
+
     def _run_loop(self) -> None:
         """Main worker loop running in the background thread."""
         from webui.models import JobState
@@ -115,6 +127,7 @@ class JobWorker:
                 job.state = JobState.FAILED
                 job.error = str(exc)
                 self._push_progress(job)
+                self._persist_job_sync(job)
             finally:
                 self._current_job = None
 
@@ -233,7 +246,7 @@ class JobWorker:
 
         if clip.input_asset and clip.input_asset.type == "video":
             webm_path = os.path.join(output_dir, f"{clip_name}_output.webm")
-            self._stitch_webm_alpha(clip, output_dir, webm_path)
+            self._stitch_webm_alpha(clip, output_dir, webm_path, job.output_bitrate)
             if os.path.exists(webm_path):
                 job.output_path = webm_path
         else:
@@ -253,6 +266,7 @@ class JobWorker:
         job.sub_step = None
         job.sub_step_label = ""
         self._push_progress(job)
+        self._persist_job_sync(job)
         logger.info("Job %s completed: %s", job.job_id, job.output_path)
 
     # ------------------------------------------------------------------
@@ -260,12 +274,15 @@ class JobWorker:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _stitch_webm_alpha(clip, output_dir: str, out_path: str) -> None:
+    def _stitch_webm_alpha(clip, output_dir: str, out_path: str, output_bitrate: int = 0) -> None:
         """Stitch FG + Matte EXR frames into a WebM with VP8 alpha + audio.
 
         Uses ffmpeg to combine the foreground (RGB) and matte (alpha)
         EXR sequences via the alphamerge filter, preserving the original
         video's audio, framerate, and resolution.
+
+        Args:
+            output_bitrate: User-selected bitrate in bps (0 = use input bitrate).
         """
         import subprocess
 
@@ -313,6 +330,10 @@ class JobWorker:
         except Exception:
             logger.warning("Could not probe input video — using fps=24, no audio")
 
+        # Determine video bitrate: user-selected value takes priority;
+        # fall back to probed input bitrate, then ffmpeg default (CRF-based).
+        effective_bitrate = output_bitrate if output_bitrate > 0 else bit_rate
+
         # Build ffmpeg command:
         # [0:v] FG frames (RGB)  [1:v] Matte frames (grayscale)  [2:a] original audio
         # alphamerge → RGBA → libvpx yuva420p + libvorbis audio
@@ -333,14 +354,14 @@ class JobWorker:
             "-deadline", "good",
             "-cpu-used", "0",
             "-auto-alt-ref", "0",
-            *(["-b:v", str(bit_rate)] if bit_rate > 0 else []),
+            *(["-b:v", str(effective_bitrate)] if effective_bitrate > 0 else []),
             "-c:a", "libvorbis",
             "-shortest",
             out_path,
             "-y",
         ]
 
-        logger.info("Stitching WebM with alpha: FG + Matte → %s @ %s fps", out_path, fps)
+        logger.info("Stitching WebM with alpha: FG + Matte → %s @ %s fps, bitrate=%s", out_path, fps, effective_bitrate or "auto")
 
         try:
             result = subprocess.run(

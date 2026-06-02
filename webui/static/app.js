@@ -9,6 +9,7 @@
   // ── State ────────────────────────────────────
   let currentJobId = null;
   let currentFileName = null;
+  let inputBitrate = 0;  // probed from uploaded video (bps)
   let eventSource = null;
 
   // ── DOM refs ─────────────────────────────────
@@ -29,6 +30,22 @@
   const progressLabel = $("#progress-label");
   const downloadLink = $("#download-link");
   const toastContainer = $("#toast-container");
+  const bitratePreset = $("#output_bitrate_preset");
+  const bitrateCustom = $("#output_bitrate_custom");
+  const inputBitrateLabel = $("#input-bitrate-label");
+
+  // ── Bitrate preset dropdown ──────────────────
+  if (bitratePreset && bitrateCustom) {
+    bitratePreset.addEventListener("change", () => {
+      if (bitratePreset.value === "-1") {
+        bitrateCustom.style.display = "block";
+        bitrateCustom.focus();
+      } else {
+        bitrateCustom.style.display = "none";
+        bitrateCustom.value = "";
+      }
+    });
+  }
 
   // ── Parameter value displays ─────────────────
   const despillRange = $("#despill_strength");
@@ -86,8 +103,15 @@
       const job = await resp.json();
       currentJobId = job.job_id;
       currentFileName = file.name;
+      inputBitrate = job.input_bitrate || 0;
       fileName.textContent = `✓ ${file.name}`;
       processBtn.disabled = false;
+      // Show probed input bitrate next to the dropdown
+      if (inputBitrate > 0) {
+        inputBitrateLabel.textContent = `Input: ${formatBitrate(inputBitrate)}`;
+      } else {
+        inputBitrateLabel.textContent = "";
+      }
       showToast("Upload complete — configure parameters and click Process", "success");
       refreshJobs();
     } catch (err) {
@@ -112,6 +136,7 @@
     formData.append("refiner_scale", $("#refiner_scale").value);
     formData.append("generate_comp", $("#generate_comp").checked);
     formData.append("gpu_post_processing", $("#gpu_post_processing").checked);
+    formData.append("output_bitrate", getOutputBitrate());
 
     processBtn.disabled = true;
     processBtn.textContent = "Starting…";
@@ -300,6 +325,27 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function getOutputBitrate() {
+    const preset = bitratePreset.value;
+    if (preset === "-1") {
+      // Custom: user enters kbps, convert to bps
+      const kbps = parseInt(bitrateCustom.value, 10);
+      if (isNaN(kbps) || kbps <= 0) return 0;
+      return kbps * 1000;
+    }
+    return parseInt(preset, 10);
+  }
+
+  function formatBitrate(bps) {
+    if (bps >= 1000000) {
+      return (bps / 1000000).toFixed(1) + " Mbps";
+    }
+    if (bps >= 1000) {
+      return (bps / 1000).toFixed(0) + " kbps";
+    }
+    return bps + " bps";
   }
 
   // ── Init ─────────────────────────────────────
