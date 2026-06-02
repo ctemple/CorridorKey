@@ -301,13 +301,15 @@ class JobWorker:
         else:
             pattern = f"{stem}.exr"
 
-        # Probe input video for fps and audio
+        # Probe input video for fps, audio, and bitrate
         fps = 24.0
         has_audio = False
+        bit_rate = 0
         try:
             info = probe_video(clip.input_asset.path)
             fps = info.get("fps", 24.0)
             has_audio = info.get("duration", 0) > 0
+            bit_rate = info.get("bit_rate", 0)
         except Exception:
             logger.warning("Could not probe input video — using fps=24, no audio")
 
@@ -328,7 +330,10 @@ class JobWorker:
             "-map", "2:a?",
             "-c:v", "libvpx",
             "-pix_fmt", "yuva420p",
+            "-deadline", "good",
+            "-cpu-used", "0",
             "-auto-alt-ref", "0",
+            *(["-b:v", str(bit_rate)] if bit_rate > 0 else []),
             "-c:a", "libvorbis",
             "-shortest",
             out_path,
