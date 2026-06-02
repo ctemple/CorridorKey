@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CorridorKey — AI Green Screen Keying</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="header">
+    <span class="header-brand">🎬 CorridorKey</span>
+    <span class="header-badge">Web UI</span>
+</header>
+
+<main class="container">
+    <!-- ── Upload + Parameters ─── -->
+    <div class="grid-2">
+
+        <!-- Upload -->
+        <div>
+            <div class="card" style="margin-bottom:24px">
+                <div class="card-title">📤 Upload Video</div>
+                <div class="upload-zone" id="upload-zone">
+                    <div class="upload-icon">🎥</div>
+                    <div class="upload-text" id="upload-text">
+                        <strong>Drag & drop</strong> a video here, or click to browse
+                    </div>
+                    <div class="upload-hint">
+                        MP4, MOV, AVI, MKV, WebM — up to 8 GB
+                    </div>
+                    <div class="upload-file-name" id="file-name"></div>
+                </div>
+                <input type="file" id="file-input" hidden accept=".mp4,.mov,.avi,.mkv,.webm">
+            </div>
+
+            <!-- Process button -->
+            <button class="btn btn-primary btn-block" id="process-btn" disabled>
+                ⚡ Process Video
+            </button>
+
+            <!-- Progress -->
+            <div id="progress-bar" style="display:none; margin-top:16px;">
+                <div style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:4px;" id="progress-label"></div>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="progress-fill" style="width:0%"></div>
+                </div>
+                <div class="progress-bar-stats" id="progress-stats"></div>
+            </div>
+
+            <!-- Download -->
+            <div id="download-link" style="margin-top:12px; text-align:center;"></div>
+        </div>
+
+        <!-- Parameters -->
+        <div class="card" style="align-self:start">
+            <div class="card-title">⚙️ Inference Settings</div>
+            <form id="params-form">
+
+                <!-- Screen Color -->
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="form-label-text">Screen Color</span>
+                    </label>
+                    <select id="screen_color">
+                        <option value="auto">Auto Detect</option>
+                        <option value="green">Green Screen</option>
+                        <option value="blue">Blue Screen</option>
+                    </select>
+                </div>
+
+                <!-- Input Colorspace -->
+                <div class="form-group">
+                    <label class="toggle" style="cursor:default">
+                        <span class="form-label-text">Input Colorspace</span>
+                        <span style="display:flex;align-items:center;gap:8px;">
+                            <span style="font-size:0.85rem;">sRGB</span>
+                            <input type="checkbox" id="input_is_linear">
+                            <span class="toggle-track"></span>
+                            <span style="font-size:0.85rem;">Linear</span>
+                        </span>
+                    </label>
+                </div>
+
+                <!-- Despill Strength -->
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="form-label-text">Despill Strength</span>
+                        <span class="form-label-value" id="despill-strength-value">5</span>
+                    </label>
+                    <input type="range" id="despill_strength" min="0" max="10" value="5" step="1">
+                </div>
+
+                <!-- Auto Despeckle -->
+                <div class="form-group">
+                    <label class="toggle" style="cursor:pointer">
+                        <span class="toggle-label">Auto Despeckle (remove tracking dots)</span>
+                        <input type="checkbox" id="auto_despeckle" checked>
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+
+                <!-- Image Size -->
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="form-label-text">Inference Resolution</span>
+                    </label>
+                    <select id="image_size">
+                        <option value="512">512</option>
+                        <option value="1024">1024</option>
+                        <option value="2048" selected>2048</option>
+                    </select>
+                </div>
+
+                <!-- Refiner Scale -->
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="form-label-text">Refiner Strength</span>
+                        <span class="form-label-value">1.0</span>
+                    </label>
+                    <select id="refiner_scale">
+                        <option value="0.5">0.5</option>
+                        <option value="1.0" selected>1.0</option>
+                        <option value="1.5">1.5</option>
+                        <option value="2.0">2.0</option>
+                    </select>
+                </div>
+
+                <!-- Advanced Options -->
+                <details style="margin-top:16px;">
+                    <summary style="cursor:pointer; color:var(--text-secondary); font-size:0.9rem;">
+                        Advanced Options
+                    </summary>
+                    <div style="margin-top:12px;">
+
+                        <!-- Despeckle Size -->
+                        <div class="form-group">
+                            <label class="form-label">
+                                <span class="form-label-text">Despeckle Min Size (pixels)</span>
+                            </label>
+                            <input type="number" id="despeckle_size" value="400" min="0" step="50">
+                        </div>
+
+                        <!-- Comp Previews -->
+                        <div class="form-group">
+                            <label class="toggle" style="cursor:pointer">
+                                <span class="toggle-label">Generate Comp Previews</span>
+                                <input type="checkbox" id="generate_comp" checked>
+                                <span class="toggle-track"></span>
+                            </label>
+                        </div>
+
+                        <!-- GPU Post-Processing -->
+                        <div class="form-group">
+                            <label class="toggle" style="cursor:pointer">
+                                <span class="toggle-label">GPU Post-Processing <span style="color:var(--yellow);font-size:0.8rem;">(experimental)</span></span>
+                                <input type="checkbox" id="gpu_post_processing">
+                                <span class="toggle-track"></span>
+                            </label>
+                        </div>
+
+                    </div>
+                </details>
+
+            </form>
+        </div>
+    </div>
+
+    <!-- ── Job Queue ─── -->
+    <div id="jobs-section" class="card" style="margin-top:24px; display:none;">
+        <div class="card-title">📋 Job Queue</div>
+        <ul class="job-list" id="job-list"></ul>
+    </div>
+</main>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
