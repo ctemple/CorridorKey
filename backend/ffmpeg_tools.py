@@ -127,6 +127,7 @@ def probe_video(path: str) -> dict:
         "frame_count": frame_count,
         "codec": video_stream.get("codec_name", "unknown"),
         "duration": float(video_stream.get("duration", 0) or data.get("format", {}).get("duration", 0)),
+        "bit_rate": int(video_stream.get("bit_rate", 0) or data.get("format", {}).get("bit_rate", 0)),
     }
 
 
