@@ -185,11 +185,11 @@ async def start_job(
     despeckle_size: Annotated[int, Form()] = 400,
     image_size: Annotated[int, Form()] = 2048,
     refiner_scale: Annotated[float, Form()] = 1.0,
-    generate_comp: Annotated[bool, Form()] = True,
+    generate_comp: Annotated[bool, Form()] = False,
     gpu_post_processing: Annotated[bool, Form()] = False,
     output_bitrate: Annotated[int, Form()] = 0,  # 0 = same as input
     mask_mode: Annotated[str, Form()] = "hybrid",  # "hybrid" | "ai" | "fast"
-    smart_shrink: Annotated[bool, Form()] = False,
+    smart_shrink: Annotated[bool, Form()] = True,
 ) -> dict:
     """Configure parameters and enqueue the job for processing."""
     async with _jobs_lock:

@@ -33,10 +33,10 @@ class InferenceParams:
     despeckle_size: int = 400
     image_size: int = 2048              # 512 | 1024 | 2048
     refiner_scale: float = 1.0
-    generate_comp: bool = True
+    generate_comp: bool = False
     gpu_post_processing: bool = False
     mask_mode: str = "hybrid"           # "hybrid" | "ai" | "fast"
-    smart_shrink: bool = False          # auto-crop to content bounding box before stitch
+    smart_shrink: bool = True           # auto-crop to content bounding box before stitch
 
     def to_inference_settings(self):
         """Convert to clip_manager.InferenceSettings."""
