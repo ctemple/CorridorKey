@@ -14,6 +14,8 @@ import threading
 import traceback
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from webui.models import Job
 
@@ -158,9 +160,11 @@ class JobWorker:
         os.makedirs(alpha_dir, exist_ok=True)
         os.makedirs(os.path.join(input_path, "VideoMamaMaskHint"), exist_ok=True)
 
-        # --- Step 2: Generate alpha hints via BiRefNet ---
+        # --- Step 2: Generate alpha hints ---
+        mask_mode = job.params.mask_mode if job.params else "hybrid"
+        mode_labels = {"hybrid": "Hybrid (fast + AI fallback)", "ai": "AI (BiRefNet)", "fast": "Fast (classical)"}
         job.sub_step = SubStep.ALPHA_GENERATION
-        job.sub_step_label = "Generating alpha hints (BiRefNet)…"
+        job.sub_step_label = f"Generating alpha hints — {mode_labels.get(mask_mode, mask_mode)}…"
         self._push_progress(job)
 
         from clip_manager import ClipEntry, run_birefnet
@@ -173,25 +177,104 @@ class JobWorker:
             raise RuntimeError(f"Could not find input asset for {clip_name}")
 
         device = resolve_device()
+        total_frames = clip.input_asset.frame_count
 
-        # Capture frame count from on_clip_start (BiRefNet's on_frame_complete
-        # passes total=0, so we track total ourselves)
-        biref_total_frames = clip.input_asset.frame_count
+        # ── AI-only mode: use existing batched BiRefNet pipeline ──
+        if mask_mode == "ai":
+            def _on_ai_frame(frame_idx: int, _num_frames: int) -> None:
+                job.current_frame = frame_idx + 1
+                job.total_frames = total_frames
+                if (frame_idx + 1) % 5 == 0 or frame_idx + 1 >= total_frames:
+                    self._push_progress(job)
 
-        def on_biref_frame(frame_idx: int, num_frames: int) -> None:
-            job.current_frame = frame_idx + 1
-            job.total_frames = biref_total_frames
-            if (frame_idx + 1) % 5 == 0 or frame_idx + 1 >= biref_total_frames:
-                self._push_progress(job)
+            run_birefnet(
+                [clip],
+                device=device,
+                usage="General",
+                dilate_radius=0,
+                on_clip_start=lambda _name, _n: None,
+                on_frame_complete=_on_ai_frame,
+            )
 
-        run_birefnet(
-            [clip],
-            device=device,
-            usage="General",
-            dilate_radius=0,
-            on_clip_start=lambda name, n: None,
-            on_frame_complete=on_biref_frame,
-        )
+        # ── Fast / Hybrid mode: per-frame mask generation ──
+        else:
+            import cv2 as _cv2
+            from webui.mask_utils import fast_chromascreen_mask as _fcsm, estimate_screen_color as _esc
+
+            # Detect screen color from first frame
+            resolved_color = "green"
+            _cap = _cv2.VideoCapture(clip.input_asset.path)
+            _ret, _frame_bgr = _cap.read()
+            _cap.release()
+            if _ret:
+                _frame_f32 = _cv2.cvtColor(_frame_bgr, _cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                resolved_color = _esc(_frame_f32)
+            logger.info("Detected screen color for '%s': %s", clip_name, resolved_color)
+
+            # Load BiRefNet only for hybrid mode (as fallback)
+            birefnet_handler = None
+            if mask_mode == "hybrid":
+                from BiRefNetModule.wrapper import BiRefNetHandler
+                logger.info("Loading BiRefNet for hybrid fallback on %s…", device)
+                birefnet_handler = BiRefNetHandler(device=device, usage="General")
+
+            # Per-frame loop
+            _cap = _cv2.VideoCapture(clip.input_asset.path)
+            frame_idx = 0
+            fast_count = 0
+            ai_count = 0
+            _stem = os.path.splitext(os.path.basename(clip.input_asset.path))[0]
+
+            try:
+                while True:
+                    _ret, _frame_bgr = _cap.read()
+                    if not _ret:
+                        break
+
+                    _frame_rgb = _cv2.cvtColor(_frame_bgr, _cv2.COLOR_BGR2RGB)
+                    _frame_f32 = _frame_rgb.astype(np.float32) / 255.0
+
+                    mask = None
+
+                    if mask_mode == "fast":
+                        mask, _conf, _ = _fcsm(_frame_f32, resolved_color)
+                        if mask is None:
+                            raise RuntimeError(
+                                f"Fast mask failed on frame {frame_idx}. "
+                                "Try 'Hybrid' or 'AI' mode."
+                            )
+                        fast_count += 1
+
+                    else:  # hybrid
+                        mask, conf, _ = _fcsm(_frame_f32, resolved_color)
+                        if mask is None or conf < 0.7:
+                            # AI fallback
+                            _mask_u8 = birefnet_handler.process_frame(_frame_rgb)
+                            mask = _mask_u8.astype(np.float32) / 255.0
+                            ai_count += 1
+                        else:
+                            fast_count += 1
+
+                    # Save mask
+                    _mask_u8 = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+                    _save_path = os.path.join(alpha_dir, f"{_stem}_alpha_{frame_idx:05d}.png")
+                    _cv2.imwrite(_save_path, _mask_u8)
+
+                    frame_idx += 1
+                    job.current_frame = frame_idx
+                    job.total_frames = total_frames
+                    if frame_idx % 5 == 0 or frame_idx >= total_frames:
+                        self._push_progress(job)
+
+            finally:
+                _cap.release()
+                if birefnet_handler is not None:
+                    birefnet_handler.cleanup()
+
+            logger.info(
+                "Alpha generation for '%s': %d frames (fast=%d, ai=%d, mode=%s)",
+                clip_name, frame_idx, fast_count, ai_count, mask_mode,
+            )
 
         # Re-scan to pick up generated alphas
         clip.alpha_asset = None
@@ -261,6 +344,9 @@ class JobWorker:
                         break
                 if job.output_path:
                     break
+
+        # ── Clean up intermediate per-frame files to free disk space ──
+        self._cleanup_intermediate_files(input_path)
 
         job.state = JobState.COMPLETED
         job.sub_step = None
@@ -396,6 +482,32 @@ class JobWorker:
                     arcname = os.path.relpath(full, output_dir)
                     zf.write(full, arcname)
         logger.info("Packaged output to %s", zip_path)
+
+    @staticmethod
+    def _cleanup_intermediate_files(input_path: str) -> None:
+        """Remove intermediate per-frame files after successful video generation.
+
+        Keeps: Input video, output videos (*_output.webm, *_comp.mp4),
+               and job.json (at workspace level).
+        Removes: AlphaHint/, VideoMamaMaskHint/, Output/FG/, Output/Matte/,
+                 Output/Comp/, Output/Processed/.
+        """
+        dirs_to_remove = [
+            os.path.join(input_path, "AlphaHint"),
+            os.path.join(input_path, "VideoMamaMaskHint"),
+            os.path.join(input_path, "Output", "FG"),
+            os.path.join(input_path, "Output", "Matte"),
+            os.path.join(input_path, "Output", "Comp"),
+            os.path.join(input_path, "Output", "Processed"),
+        ]
+
+        for dir_path in dirs_to_remove:
+            if os.path.isdir(dir_path):
+                try:
+                    shutil.rmtree(dir_path)
+                    logger.info("Cleaned up intermediate directory: %s", dir_path)
+                except OSError as exc:
+                    logger.warning("Failed to clean up %s: %s", dir_path, exc)
 
 
 def _sanitize_clip_name(filename: str) -> str:

@@ -69,6 +69,30 @@
                     </select>
                 </div>
 
+                <!-- Mask Mode -->
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="form-label-text">Mask Mode</span>
+                    </label>
+                    <div class="radio-group" id="mask_mode_group">
+                        <label class="radio-option">
+                            <input type="radio" name="mask_mode" value="hybrid" checked>
+                            <span class="radio-label">Hybrid</span>
+                            <span class="radio-desc">fast detection + AI fallback</span>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="mask_mode" value="fast">
+                            <span class="radio-label">Fast</span>
+                            <span class="radio-desc">classical only</span>
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="mask_mode" value="ai">
+                            <span class="radio-label">AI</span>
+                            <span class="radio-desc">always BiRefNet</span>
+                        </label>
+                    </div>
+                </div>
+
                 <!-- Input Colorspace -->
                 <div class="form-group">
                     <label class="toggle" style="cursor:default">

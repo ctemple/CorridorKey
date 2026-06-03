@@ -103,6 +103,44 @@ class BiRefNetHandler:
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
+    def process_frame(self, image_rgb: np.ndarray) -> np.ndarray:
+        """Process a single frame (numpy RGB uint8 array) and return the alpha mask.
+
+        Args:
+            image_rgb: RGB image as uint8 numpy array, shape (H, W, 3).
+
+        Returns:
+            Alpha mask as uint8 numpy array, shape (H, W), values 0–255.
+        """
+        pil_image = Image.fromarray(image_rgb)
+
+        # Preprocess
+        if self.resolution is None:
+            resolution_div_by_32 = [int(int(reso) // 32 * 32) for reso in pil_image.size]
+            if resolution_div_by_32 != self.resolution:
+                self.resolution = resolution_div_by_32
+        image_preprocessor = ImagePreprocessor(resolution=tuple(self.resolution))
+        image_proc = image_preprocessor.proc(pil_image).unsqueeze(0).to(self.device)
+        if half_precision:
+            image_proc = image_proc.half()
+
+        # Inference
+        with torch.no_grad():
+            preds = self.birefnet(image_proc)[-1].sigmoid().cpu()
+
+        pred = preds[0].squeeze()
+        pred_pil = transforms.ToPILImage()(pred.float())
+
+        # Resize to original size
+        target_size = (image_rgb.shape[1], image_rgb.shape[0])
+        mask = pred_pil.resize(target_size)
+        mask_np = np.array(mask)
+
+        # Binary threshold (same as process())
+        _, mask_np = cv2.threshold(mask_np, 10, 255, cv2.THRESH_BINARY)
+
+        return mask_np
+
     def process(self, input_path, alpha_output_dir=None, dilate_radius=0, on_frame_complete=None):
         """
         Process a single video or directory of images.

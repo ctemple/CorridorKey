@@ -35,6 +35,7 @@ class InferenceParams:
     refiner_scale: float = 1.0
     generate_comp: bool = True
     gpu_post_processing: bool = False
+    mask_mode: str = "hybrid"           # "hybrid" | "ai" | "fast"
 
     def to_inference_settings(self):
         """Convert to clip_manager.InferenceSettings."""
@@ -127,6 +128,7 @@ class Job:
                 "refiner_scale": self.params.refiner_scale if self.params else 1.0,
                 "generate_comp": self.params.generate_comp if self.params else True,
                 "gpu_post_processing": self.params.gpu_post_processing if self.params else False,
+                "mask_mode": self.params.mask_mode if self.params else "hybrid",
             } if self.params else None,
         }
 

@@ -1,1 +1,2 @@
+set UV_LINK_MODE=copy
 uv run --extra cuda uvicorn webui.app:app --host 0.0.0.0 --port 8000

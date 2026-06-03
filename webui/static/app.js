@@ -137,6 +137,7 @@
     formData.append("generate_comp", $("#generate_comp").checked);
     formData.append("gpu_post_processing", $("#gpu_post_processing").checked);
     formData.append("output_bitrate", getOutputBitrate());
+    formData.append("mask_mode", getMaskMode());
 
     processBtn.disabled = true;
     processBtn.textContent = "Starting…";
@@ -346,6 +347,11 @@
       return (bps / 1000).toFixed(0) + " kbps";
     }
     return bps + " bps";
+  }
+
+  function getMaskMode() {
+    const checked = document.querySelector('input[name="mask_mode"]:checked');
+    return checked ? checked.value : "hybrid";
   }
 
   // ── Init ─────────────────────────────────────

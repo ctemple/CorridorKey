@@ -188,6 +188,7 @@ async def start_job(
     generate_comp: Annotated[bool, Form()] = True,
     gpu_post_processing: Annotated[bool, Form()] = False,
     output_bitrate: Annotated[int, Form()] = 0,  # 0 = same as input
+    mask_mode: Annotated[str, Form()] = "hybrid",  # "hybrid" | "ai" | "fast"
 ) -> dict:
     """Configure parameters and enqueue the job for processing."""
     async with _jobs_lock:
@@ -201,6 +202,8 @@ async def start_job(
         # Validate
         if screen_color not in ("auto", "green", "blue"):
             raise HTTPException(400, f"Invalid screen_color '{screen_color}'")
+        if mask_mode not in ("hybrid", "ai", "fast"):
+            raise HTTPException(400, f"Invalid mask_mode '{mask_mode}'")
         if not 0 <= despill_strength <= 10:
             raise HTTPException(400, "despill_strength must be 0–10")
         if image_size not in (512, 1024, 2048):
@@ -216,6 +219,7 @@ async def start_job(
             refiner_scale=refiner_scale,
             generate_comp=generate_comp,
             gpu_post_processing=gpu_post_processing,
+            mask_mode=mask_mode,
         )
 
         # Reset error state if retrying
