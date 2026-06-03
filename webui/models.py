@@ -36,6 +36,7 @@ class InferenceParams:
     generate_comp: bool = True
     gpu_post_processing: bool = False
     mask_mode: str = "hybrid"           # "hybrid" | "ai" | "fast"
+    smart_shrink: bool = False          # auto-crop to content bounding box before stitch
 
     def to_inference_settings(self):
         """Convert to clip_manager.InferenceSettings."""
@@ -129,6 +130,7 @@ class Job:
                 "generate_comp": self.params.generate_comp if self.params else True,
                 "gpu_post_processing": self.params.gpu_post_processing if self.params else False,
                 "mask_mode": self.params.mask_mode if self.params else "hybrid",
+                "smart_shrink": self.params.smart_shrink if self.params else False,
             } if self.params else None,
         }
 

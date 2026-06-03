@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+
+# OpenCV EXR support must be enabled before importing cv2 (also set in mask_utils.py)
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+
 import queue
 import shutil
 import threading
@@ -320,16 +324,35 @@ class JobWorker:
             on_frame_complete=on_frame_complete,
         )
 
-        # --- Step 4: Stitch output (WebM VP8 + alpha + audio) ---
+        output_dir = os.path.join(input_path, "Output")
+
+        # --- Step 4: Smart Shrink (optional) ---
+        smart_shrink_bbox: tuple[int, int, int, int] | None = None
+        if job.params and job.params.smart_shrink:
+            matte_dir = os.path.join(output_dir, "Matte")
+            if os.path.isdir(matte_dir):
+                from webui.mask_utils import compute_content_bbox
+
+                smart_shrink_bbox = compute_content_bbox(
+                    matte_dir, alpha_threshold=1.0 / 255.0
+                )
+                if smart_shrink_bbox is not None:
+                    logger.info(
+                        "Smart Shrink: crop=%dx%d+%d+%d",
+                        smart_shrink_bbox[2], smart_shrink_bbox[3],
+                        smart_shrink_bbox[0], smart_shrink_bbox[1],
+                    )
+                else:
+                    logger.info("Smart Shrink: no benefit, skipping")
+
+        # --- Step 5: Stitch output (WebM VP8 + alpha + audio) ---
         job.sub_step = SubStep.STITCHING
         job.sub_step_label = "Stitching output video…"
         self._push_progress(job)
 
-        output_dir = os.path.join(input_path, "Output")
-
         if clip.input_asset and clip.input_asset.type == "video":
             webm_path = os.path.join(output_dir, f"{clip_name}_output.webm")
-            self._stitch_webm_alpha(clip, output_dir, webm_path, job.output_bitrate)
+            self._stitch_webm_alpha(clip, output_dir, webm_path, job.output_bitrate, crop=smart_shrink_bbox)
             if os.path.exists(webm_path):
                 job.output_path = webm_path
         else:
@@ -360,7 +383,10 @@ class JobWorker:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _stitch_webm_alpha(clip, output_dir: str, out_path: str, output_bitrate: int = 0) -> None:
+    def _stitch_webm_alpha(
+        clip, output_dir: str, out_path: str, output_bitrate: int = 0,
+        crop: tuple[int, int, int, int] | None = None,
+    ) -> None:
         """Stitch FG + Matte EXR frames into a WebM with VP8 alpha + audio.
 
         Uses ffmpeg to combine the foreground (RGB) and matte (alpha)
@@ -369,6 +395,8 @@ class JobWorker:
 
         Args:
             output_bitrate: User-selected bitrate in bps (0 = use input bitrate).
+            crop: Optional ``(x, y, w, h)`` to crop both FG and Matte
+                sequences before alphamerge (Smart Shrink).
         """
         import subprocess
 
@@ -423,6 +451,12 @@ class JobWorker:
         # Build ffmpeg command:
         # [0:v] FG frames (RGB)  [1:v] Matte frames (grayscale)  [2:a] original audio
         # alphamerge → RGBA → libvpx yuva420p + libvorbis audio
+        if crop is not None:
+            cx, cy, cw, ch = crop
+            filter_complex = f"[0:v]crop={cw}:{ch}:{cx}:{cy}[fg];[1:v]crop={cw}:{ch}:{cx}:{cy}[matte];[fg][matte]alphamerge[out]"
+        else:
+            filter_complex = "[0:v][1:v]alphamerge[out]"
+
         cmd = [
             ffmpeg,
             "-framerate", str(fps),
@@ -432,7 +466,7 @@ class JobWorker:
             "-start_number", "0",
             "-i", os.path.join(matte_dir, pattern),
             "-i", clip.input_asset.path,
-            "-filter_complex", "[0:v][1:v]alphamerge[out]",
+            "-filter_complex", filter_complex,
             "-map", "[out]",
             "-map", "2:a?",
             "-c:v", "libvpx",
@@ -447,7 +481,11 @@ class JobWorker:
             "-y",
         ]
 
-        logger.info("Stitching WebM with alpha: FG + Matte → %s @ %s fps, bitrate=%s", out_path, fps, effective_bitrate or "auto")
+        logger.info(
+            "Stitching WebM with alpha: FG + Matte → %s @ %s fps, bitrate=%s%s",
+            out_path, fps, effective_bitrate or "auto",
+            f", crop={crop[2]}x{crop[3]}+{crop[0]}+{crop[1]}" if crop else "",
+        )
 
         try:
             result = subprocess.run(

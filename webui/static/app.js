@@ -138,6 +138,7 @@
     formData.append("gpu_post_processing", $("#gpu_post_processing").checked);
     formData.append("output_bitrate", getOutputBitrate());
     formData.append("mask_mode", getMaskMode());
+    formData.append("smart_shrink", $("#smart_shrink").checked);
 
     processBtn.disabled = true;
     processBtn.textContent = "Starting…";

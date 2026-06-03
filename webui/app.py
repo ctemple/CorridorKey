@@ -189,6 +189,7 @@ async def start_job(
     gpu_post_processing: Annotated[bool, Form()] = False,
     output_bitrate: Annotated[int, Form()] = 0,  # 0 = same as input
     mask_mode: Annotated[str, Form()] = "hybrid",  # "hybrid" | "ai" | "fast"
+    smart_shrink: Annotated[bool, Form()] = False,
 ) -> dict:
     """Configure parameters and enqueue the job for processing."""
     async with _jobs_lock:
@@ -220,6 +221,7 @@ async def start_job(
             generate_comp=generate_comp,
             gpu_post_processing=gpu_post_processing,
             mask_mode=mask_mode,
+            smart_shrink=smart_shrink,
         )
 
         # Reset error state if retrying
