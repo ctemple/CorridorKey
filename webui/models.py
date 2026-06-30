@@ -37,6 +37,7 @@ class InferenceParams:
     gpu_post_processing: bool = False
     mask_mode: str = "hybrid"           # "hybrid" | "ai" | "fast"
     smart_shrink: bool = True           # auto-crop to content bounding box before stitch
+    output_format: str = "webm"         # "webm" | "mov"
 
     def to_inference_settings(self):
         """Convert to clip_manager.InferenceSettings."""
@@ -131,6 +132,7 @@ class Job:
                 "gpu_post_processing": self.params.gpu_post_processing if self.params else False,
                 "mask_mode": self.params.mask_mode if self.params else "hybrid",
                 "smart_shrink": self.params.smart_shrink if self.params else False,
+                "output_format": self.params.output_format if self.params else "webm",
             } if self.params else None,
         }
 

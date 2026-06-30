@@ -190,6 +190,7 @@ async def start_job(
     output_bitrate: Annotated[int, Form()] = 0,  # 0 = same as input
     mask_mode: Annotated[str, Form()] = "hybrid",  # "hybrid" | "ai" | "fast"
     smart_shrink: Annotated[bool, Form()] = True,
+    output_format: Annotated[str, Form()] = "webm",  # "webm" | "mov"
 ) -> dict:
     """Configure parameters and enqueue the job for processing."""
     async with _jobs_lock:
@@ -205,6 +206,8 @@ async def start_job(
             raise HTTPException(400, f"Invalid screen_color '{screen_color}'")
         if mask_mode not in ("hybrid", "ai", "fast"):
             raise HTTPException(400, f"Invalid mask_mode '{mask_mode}'")
+        if output_format not in ("webm", "mov"):
+            raise HTTPException(400, f"Invalid output_format '{output_format}'")
         if not 0 <= despill_strength <= 10:
             raise HTTPException(400, "despill_strength must be 0–10")
         if image_size not in (512, 1024, 2048):
@@ -222,6 +225,7 @@ async def start_job(
             gpu_post_processing=gpu_post_processing,
             mask_mode=mask_mode,
             smart_shrink=smart_shrink,
+            output_format=output_format,
         )
 
         # Reset error state if retrying
@@ -333,7 +337,9 @@ async def download_job(job_id: str) -> FileResponse:
 
     download_name = os.path.basename(job.output_path)
     media_type = "video/webm" if job.output_path.endswith(".webm") else (
-        "video/mp4" if job.output_path.endswith(".mp4") else "application/octet-stream"
+        "video/quicktime" if job.output_path.endswith(".mov") else (
+            "video/mp4" if job.output_path.endswith(".mp4") else "application/octet-stream"
+        )
     )
     return FileResponse(
         job.output_path,
@@ -365,17 +371,19 @@ def _scan_for_output(job_dir: str) -> str | None:
     candidates: list[tuple[int, str]] = []  # (score, path)
     for root, _dirs, files in os.walk(job_dir):
         for f in files:
-            if not f.endswith((".webm", ".mp4")):
+            if not f.endswith((".webm", ".mp4", ".mov")):
                 continue
             full = os.path.join(root, f)
             # Skip input files (bare input.* at workspace root or clip root level)
             if os.path.basename(f).startswith("input."):
                 continue
-            if f.endswith("_output.webm"):
+            if f.endswith("_output.webm") or f.endswith("_output.mov"):
                 return full  # best match — return immediately
             if f.endswith("_comp.mp4"):
                 candidates.append((2, full))
             elif f.endswith(".webm"):
+                candidates.append((1, full))
+            elif f.endswith(".mov"):
                 candidates.append((1, full))
             elif f.endswith(".mp4"):
                 candidates.append((0, full))

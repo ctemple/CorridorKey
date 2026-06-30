@@ -345,24 +345,29 @@ class JobWorker:
                 else:
                     logger.info("Smart Shrink: no benefit, skipping")
 
-        # --- Step 5: Stitch output (WebM VP8 + alpha + audio) ---
+        # --- Step 5: Stitch output ---
         job.sub_step = SubStep.STITCHING
         job.sub_step_label = "Stitching output video…"
         self._push_progress(job)
 
+        output_format = (job.params.output_format if job.params else "webm")
         if clip.input_asset and clip.input_asset.type == "video":
-            webm_path = os.path.join(output_dir, f"{clip_name}_output.webm")
-            self._stitch_webm_alpha(clip, output_dir, webm_path, job.output_bitrate, crop=smart_shrink_bbox)
-            if os.path.exists(webm_path):
-                job.output_path = webm_path
+            if output_format == "mov":
+                out_path = os.path.join(output_dir, f"{clip_name}_output.mov")
+                self._stitch_mov_alpha(clip, output_dir, out_path, job.output_bitrate, crop=smart_shrink_bbox)
+            else:
+                out_path = os.path.join(output_dir, f"{clip_name}_output.webm")
+                self._stitch_webm_alpha(clip, output_dir, out_path, job.output_bitrate, crop=smart_shrink_bbox)
+            if os.path.exists(out_path):
+                job.output_path = out_path
         else:
             self._package_sequence(output_dir)
 
         if job.output_path is None:
-            # Fallback: look for any webm/mp4 in output tree
+            # Fallback: look for any webm/mov/mp4 in output tree
             for root, _dirs, files in os.walk(output_dir):
                 for f in files:
-                    if f.endswith(".webm"):
+                    if f.endswith((".webm", ".mov")):
                         job.output_path = os.path.join(root, f)
                         break
                 if job.output_path:
@@ -504,6 +509,123 @@ class JobWorker:
             logger.error("ffmpeg WebM stitch timed out")
         except Exception as exc:
             logger.error("ffmpeg WebM stitch error: %s", exc)
+
+    @staticmethod
+    def _stitch_mov_alpha(
+        clip, output_dir: str, out_path: str, output_bitrate: int = 0,
+        crop: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """Stitch FG + Matte EXR frames into a MOV with ProRes 4444 alpha + audio.
+
+        Uses ffmpeg to combine the foreground (RGB) and matte (alpha)
+        EXR sequences via the alphamerge filter, encoding to Apple ProRes 4444
+        (yuva444p10le) which preserves the alpha channel for professional VFX
+        pipelines. Audio is copied from the original input.
+
+        Args:
+            output_bitrate: Ignored for ProRes (codec uses fixed profile-based
+                bitrate). Kept for API consistency with _stitch_webm_alpha.
+            crop: Optional ``(x, y, w, h)`` to crop both FG and Matte
+                sequences before alphamerge (Smart Shrink).
+        """
+        import subprocess
+
+        try:
+            from backend.ffmpeg_tools import find_ffmpeg, probe_video
+        except ImportError:
+            logger.warning("ffmpeg_tools not available — skipping MOV stitch")
+            return
+
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            logger.warning("ffmpeg not found — skipping MOV stitch")
+            return
+
+        fg_dir = os.path.join(output_dir, "FG")
+        matte_dir = os.path.join(output_dir, "Matte")
+
+        if not os.path.isdir(fg_dir) or not os.path.isdir(matte_dir):
+            logger.warning("FG or Matte directory missing — cannot stitch MOV with alpha")
+            return
+
+        fg_files = sorted(f for f in os.listdir(fg_dir) if f.lower().endswith(".exr"))
+        matte_files = sorted(f for f in os.listdir(matte_dir) if f.lower().endswith(".exr"))
+        if not fg_files or not matte_files:
+            logger.warning("No EXR frames found in FG/Matte — cannot stitch")
+            return
+
+        # Determine frame pattern
+        first = fg_files[0]
+        stem = os.path.splitext(first)[0]
+        if stem.isdigit():
+            pattern = f"%0{len(stem)}d.exr"
+        else:
+            pattern = f"{stem}.exr"
+
+        # Probe input video for fps and audio
+        fps = 24.0
+        has_audio = False
+        try:
+            info = probe_video(clip.input_asset.path)
+            fps = info.get("fps", 24.0)
+            has_audio = info.get("duration", 0) > 0
+        except Exception:
+            logger.warning("Could not probe input video — using fps=24, no audio")
+
+        # Build filter: crop → alphamerge
+        if crop is not None:
+            cx, cy, cw, ch = crop
+            filter_complex = (
+                f"[0:v]crop={cw}:{ch}:{cx}:{cy}[fg];"
+                f"[1:v]crop={cw}:{ch}:{cx}:{cy}[matte];"
+                f"[fg][matte]alphamerge[out]"
+            )
+        else:
+            filter_complex = "[0:v][1:v]alphamerge[out]"
+
+        cmd = [
+            ffmpeg,
+            "-framerate", str(fps),
+            "-start_number", "0",
+            "-i", os.path.join(fg_dir, pattern),
+            "-framerate", str(fps),
+            "-start_number", "0",
+            "-i", os.path.join(matte_dir, pattern),
+            "-i", clip.input_asset.path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-map", "2:a?",
+            "-c:v", "prores_ks",
+            "-profile:v", "4",        # 4444 with alpha
+            "-pix_fmt", "yuva444p10le",
+            "-c:a", "pcm_s16le",       # PCM audio in MOV container
+            "-shortest",
+            out_path,
+            "-y",
+        ]
+
+        logger.info(
+            "Stitching MOV with alpha: FG + Matte → %s @ %s fps, ProRes 4444%s",
+            out_path, fps,
+            f", crop={crop[2]}x{crop[3]}+{crop[0]}+{crop[1]}" if crop else "",
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if result.returncode != 0:
+                logger.error("ffmpeg MOV stitch failed: %s", result.stderr[-500:])
+            else:
+                logger.info("MOV with alpha written: %s", out_path)
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg MOV stitch timed out")
+        except Exception as exc:
+            logger.error("ffmpeg MOV stitch error: %s", exc)
 
     @staticmethod
     def _package_sequence(output_dir: str) -> None:

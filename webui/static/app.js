@@ -139,6 +139,7 @@
     formData.append("output_bitrate", getOutputBitrate());
     formData.append("mask_mode", getMaskMode());
     formData.append("smart_shrink", $("#smart_shrink").checked);
+    formData.append("output_format", $("#output_format").value);
 
     processBtn.disabled = true;
     processBtn.textContent = "Starting…";
