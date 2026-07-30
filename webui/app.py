@@ -148,6 +148,7 @@ async def upload_video(file: UploadFile = File(...)) -> dict:
         original_filename=file.filename,
         uploaded_path=str(upload_path),
         workspace_dir=str(job_dir),
+        created_at=_utcnow_iso(),
     )
 
     # Probe input video to get bitrate for the UI default
@@ -263,7 +264,9 @@ async def job_status(job_id: str) -> dict:
 async def list_jobs() -> list[dict]:
     """List all jobs (queue overview)."""
     async with _jobs_lock:
-        return [j.to_dict() for j in _jobs.values()]
+        all_jobs = list(_jobs.values())
+        all_jobs.sort(key=lambda j: j.created_at, reverse=True)
+        return [j.to_dict() for j in all_jobs]
 
 
 # ---------------------------------------------------------------------------
@@ -336,16 +339,28 @@ async def download_job(job_id: str) -> FileResponse:
         raise HTTPException(404, "Output file not found — it may have been cleaned up")
 
     download_name = os.path.basename(job.output_path)
-    media_type = "video/webm" if job.output_path.endswith(".webm") else (
-        "video/quicktime" if job.output_path.endswith(".mov") else (
-            "video/mp4" if job.output_path.endswith(".mp4") else "application/octet-stream"
-        )
+    media_type = (
+        "application/zip" if job.output_path.endswith(".zip") else
+        "video/webm" if job.output_path.endswith(".webm") else
+        "video/quicktime" if job.output_path.endswith(".mov") else
+        "video/mp4" if job.output_path.endswith(".mp4") else
+        "application/octet-stream"
     )
     return FileResponse(
         job.output_path,
         media_type=media_type,
         filename=download_name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _utcnow_iso() -> str:
+    """Return current UTC time as an ISO 8601 string (with Z suffix)."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # ---------------------------------------------------------------------------
@@ -371,16 +386,20 @@ def _scan_for_output(job_dir: str) -> str | None:
     candidates: list[tuple[int, str]] = []  # (score, path)
     for root, _dirs, files in os.walk(job_dir):
         for f in files:
-            if not f.endswith((".webm", ".mp4", ".mov")):
+            if not f.endswith((".webm", ".mp4", ".mov", ".zip")):
                 continue
             full = os.path.join(root, f)
             # Skip input files (bare input.* at workspace root or clip root level)
             if os.path.basename(f).startswith("input."):
                 continue
+            if f.endswith("_output.zip"):
+                return full  # Smart Shrink ZIP — best match
             if f.endswith("_output.webm") or f.endswith("_output.mov"):
                 return full  # best match — return immediately
             if f.endswith("_comp.mp4"):
                 candidates.append((2, full))
+            elif f.endswith(".zip"):
+                candidates.append((3, full))  # Smart Shrink ZIP
             elif f.endswith(".webm"):
                 candidates.append((1, full))
             elif f.endswith(".mov"):
@@ -421,6 +440,7 @@ async def _recover_jobs() -> None:
             output_path=data.get("output_filename"),
             input_bitrate=data.get("input_bitrate", 0),
             output_bitrate=data.get("output_bitrate", 0),
+            created_at=data.get("created_at", ""),
             error=data.get("error"),
         )
 

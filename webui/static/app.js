@@ -245,7 +245,6 @@
     }
     jobsSection.style.display = "block";
     jobList.innerHTML = jobs
-      .reverse()
       .map(
         (j) => `
       <li class="job-item" data-job-id="${j.job_id}">
@@ -253,6 +252,7 @@
         <div class="job-info">
           <div class="job-name">${escHtml(j.original_filename || j.job_id)}</div>
           <div class="job-meta">${statusLabel(j)}</div>
+          ${j.created_at ? `<div class="job-time">${formatLocalTime(j.created_at)}</div>` : ""}
           ${j.state === "processing" ? progressBarHtml(j) : ""}
         </div>
         <div class="job-actions">
@@ -349,6 +349,15 @@
       return (bps / 1000).toFixed(0) + " kbps";
     }
     return bps + " bps";
+  }
+
+  function formatLocalTime(isoStr) {
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleString();
+    } catch (_) {
+      return isoStr;
+    }
   }
 
   function getMaskMode() {

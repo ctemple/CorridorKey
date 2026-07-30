@@ -412,6 +412,13 @@ input[type="number"]:focus {
     color: var(--text-secondary);
 }
 
+.job-time {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    opacity: 0.7;
+    margin-top: 2px;
+}
+
 .job-actions {
     flex-shrink: 0;
 }

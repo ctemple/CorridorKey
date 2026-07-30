@@ -98,6 +98,7 @@ class Job:
     output_path: str | None = None   # Final downloadable output
     input_bitrate: int = 0           # Probed input video bitrate (bps)
     output_bitrate: int = 0          # User-selected output bitrate (bps, 0 = same as input)
+    created_at: str = ""             # ISO 8601 timestamp of job creation
     error: str | None = None
 
     # Runtime progress (not persisted)
@@ -120,6 +121,7 @@ class Job:
             "output_filename": self.output_path,
             "input_bitrate": self.input_bitrate,
             "output_bitrate": self.output_bitrate,
+            "created_at": self.created_at,
             "params": {
                 "screen_color": self.params.screen_color if self.params else "auto",
                 "input_is_linear": self.params.input_is_linear if self.params else False,

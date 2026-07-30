@@ -360,6 +360,12 @@ class JobWorker:
                 self._stitch_webm_alpha(clip, output_dir, out_path, job.output_bitrate, crop=smart_shrink_bbox)
             if os.path.exists(out_path):
                 job.output_path = out_path
+
+                # ── Smart Shrink: package video + crop info into ZIP ──
+                if smart_shrink_bbox is not None:
+                    job.output_path = self._package_crop_zip(
+                        clip, output_dir, out_path, smart_shrink_bbox,
+                    )
         else:
             self._package_sequence(output_dir)
 
@@ -642,6 +648,70 @@ class JobWorker:
                     arcname = os.path.relpath(full, output_dir)
                     zf.write(full, arcname)
         logger.info("Packaged output to %s", zip_path)
+
+    @staticmethod
+    def _package_crop_zip(
+        clip, output_dir: str, video_path: str,
+        crop_bbox: tuple[int, int, int, int],
+    ) -> str:
+        """Package cropped video + crop_info.json into a STORED ZIP.
+
+        Called when Smart Shrink produced a crop.  The ZIP contains the
+        stitched output video and a ``crop_info.json`` with the original
+        resolution and crop rectangle so downstream compositing tools can
+        place the keyed footage correctly.
+
+        Returns:
+            Path to the generated ZIP file.
+        """
+        import json as _json
+        import zipfile
+
+        from backend.ffmpeg_tools import probe_video
+
+        # Original resolution from the input video
+        orig_w, orig_h = 0, 0
+        try:
+            info = probe_video(clip.input_asset.path)
+            orig_w = info.get("width", 0)
+            orig_h = info.get("height", 0)
+        except Exception:
+            logger.warning("Could not probe input video for original resolution")
+
+        cx, cy, cw, ch = crop_bbox
+
+        crop_info = {
+            "original_resolution": {"width": orig_w, "height": orig_h},
+            "crop_rect": {"x": cx, "y": cy, "width": cw, "height": ch},
+        }
+
+        # Write crop_info.json alongside the video
+        crop_info_path = os.path.join(output_dir, "crop_info.json")
+        with open(crop_info_path, "w", encoding="utf-8") as f:
+            _json.dump(crop_info, f, indent=2)
+
+        # Create ZIP (STORED = no compression, fastest for already-compressed video)
+        zip_basename = os.path.splitext(os.path.basename(video_path))[0] + ".zip"
+        zip_path = os.path.join(output_dir, zip_basename)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+            zf.write(video_path, os.path.basename(video_path))
+            zf.write(crop_info_path, "crop_info.json")
+
+        # Remove the bare video and crop_info since they're inside the ZIP
+        try:
+            os.remove(video_path)
+        except OSError:
+            pass
+        try:
+            os.remove(crop_info_path)
+        except OSError:
+            pass
+
+        logger.info(
+            "Smart Shrink ZIP: %s (orig=%dx%d, crop=%dx%d+%d+%d)",
+            zip_path, orig_w, orig_h, cw, ch, cx, cy,
+        )
+        return zip_path
 
     @staticmethod
     def _cleanup_intermediate_files(input_path: str) -> None:
